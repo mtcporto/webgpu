@@ -204,6 +204,7 @@
     }
     .tag-default  { background: rgba(124,109,239,0.22); color: var(--accent); }
     .tag-upgrade  { background: rgba(251,191,36,0.15);  color: var(--warn); }
+    .tag-fast     { background: rgba(74,222,128,0.15);  color: var(--ok); }
     .tag-cached   { background: rgba(74,222,128,0.15);  color: var(--ok); }
     .tag-size     { background: var(--surface3); color: var(--text-dim); }
 
@@ -543,8 +544,12 @@
       ⚠️ <strong>WebGPU não disponível.</strong> Use Chrome 113+, Edge 113+ ou Firefox Nightly com WebGPU habilitado.
     </div>
 
+    <div class="banner-warn" id="noadapter-warn">
+      ⚠️ <strong>Nenhuma GPU encontrada.</strong> WebGPU está disponível, mas o navegador não encontrou um adaptador gráfico compatível. Tente habilitar a aceleração por hardware nas configurações do navegador ou use um computador com GPU.
+    </div>
+
     <div class="banner-info" id="igpu-warn">
-      ℹ️ <strong>GPU integrada detectada.</strong> Intel Iris Xe compartilha memória com a CPU — espere <strong>2–6 tok/s</strong>. Respostas chegam token a token via streaming. Para mais velocidade, use um PC com GPU discreta (NVIDIA/AMD).
+      ℹ️ <strong>GPU integrada detectada.</strong> Intel Iris / UHD compartilha memória com a CPU — espere <strong>1–4 tok/s</strong>. Escolha o modelo <em>Ultrarrápido</em> para melhor experiência. Para mais velocidade, use um PC com GPU discreta (NVIDIA/AMD).
     </div>
 
     <div class="section-label">Status do Sistema</div>
@@ -695,6 +700,8 @@ async function detectSystem() {
 
   if (!adapter) {
     setDot("d-webgpu", "warn"); setVal("v-webgpu", "Sem adaptador");
+    $('noadapter-warn').style.display = 'block';
+    startBtn.disabled = true;
     return;
   }
 
@@ -788,21 +795,28 @@ function buildModelList() {
 
   const ranked = [...gemmas].sort((a, b) => score(b) - score(a));
 
-  // Pick best small and best medium (no -1k duplicates)
-  const small  = ranked.filter(m => sizeClass(m) === "small"  && !m.model_id.includes("-1k"))[0];
-  const medium = ranked.filter(m => sizeClass(m) === "medium" && !m.model_id.includes("-1k"))[0];
+  // Pick best small (with and without -1k) and best medium
+  const small1k = ranked.filter(m => sizeClass(m) === "small"  &&  m.model_id.includes("-1k"))[0];
+  const small   = ranked.filter(m => sizeClass(m) === "small"  && !m.model_id.includes("-1k"))[0];
+  const medium  = ranked.filter(m => sizeClass(m) === "medium" && !m.model_id.includes("-1k"))[0];
 
-  // If we can't classify, just show top 2
+  // For integrated GPU: show fastest (1k context) + regular small
+  // For high-end: show small + medium
   const toShow = [];
-  if (small)  toShow.push({ m: small,  tier: "small" });
-  if (medium) toShow.push({ m: medium, tier: "medium" });
+  if (isIntegratedGpu) {
+    if (small1k) toShow.push({ m: small1k, tier: "fast" });
+    if (small)   toShow.push({ m: small,   tier: "small" });
+  } else {
+    if (small)  toShow.push({ m: small,  tier: "small" });
+    if (medium) toShow.push({ m: medium, tier: "medium" });
+  }
   if (toShow.length === 0) {
     const top = ranked.filter(m => !m.model_id.includes("-1k")).slice(0, 2);
     top.forEach((m, i) => toShow.push({ m, tier: i === 0 ? "small" : "medium" }));
   }
 
   // Decide default
-  const defaultTier = gpuIsHighEnd ? "medium" : "small";
+  const defaultTier = isIntegratedGpu ? "fast" : (gpuIsHighEnd ? "medium" : "small");
 
   const container = $("model-cards");
   container.innerHTML = "";
@@ -834,7 +848,11 @@ function makeModelCard(modelRecord, tier, isDefault) {
     .replace(/-q[0-9]f[0-9]+_[0-9]-MLC.*$/, "")
     .replace(/-/g, " ");
 
-  const sizeLabel = tier === "small" ? "~2B" : "~9B";
+  const is1k = id.includes("-1k");
+  const sizeLabel = tier === "medium" ? "~9B" : (is1k ? "~2B · 1k ctx" : "~2B");
+  const ctxLabel  = is1k ? "Contexto 1k" : "Contexto 4k";
+  const roleLabel = tier === "fast" ? "Ultrarrápido" : (isDefault ? "Recomendado" : "Avançado");
+  const roleClass = tier === "fast" ? "tag-fast" : (isDefault ? "tag-default" : "tag-upgrade");
 
   const card      = document.createElement("div");
   card.className  = "model-card" + (isDefault ? " selected" : "");
@@ -843,11 +861,11 @@ function makeModelCard(modelRecord, tier, isDefault) {
   card.innerHTML = `
     <div class="model-info">
       <div class="model-name">${friendlyName}</div>
-      <div class="model-meta">${vram} · Contexto 4k</div>
+      <div class="model-meta">${vram} · ${ctxLabel}</div>
     </div>
     <div class="model-tags">
-      <span class="tag ${isDefault ? "tag-default" : "tag-upgrade"}" id="tag-role-${id}">
-        ${isDefault ? "Recomendado" : "Avançado"}
+      <span class="tag ${roleClass}" id="tag-role-${id}">
+        ${roleLabel}
       </span>
       <span class="tag tag-size">${sizeLabel}</span>
       <span class="tag tag-cached" id="tag-cache-${sanitizeId(id)}" style="display:none">Em cache ✓</span>
@@ -989,7 +1007,7 @@ async function sendMessage() {
       messages: [{ role: "system", content: SYSTEM_PROMPT }, ...history],
       stream:      true,
       temperature: 0.72,
-      max_tokens:  isIntegratedGpu ? 768 : 2048,
+      max_tokens:  selectedId?.includes("-1k") ? 512 : (isIntegratedGpu ? 768 : 2048),
     });
 
     // Replace indicator with live response
