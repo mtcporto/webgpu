@@ -114,6 +114,17 @@
       margin-bottom: 20px;
       display: none;
     }
+    .banner-info {
+      background: rgba(79,158,255,0.08);
+      border: 1px solid rgba(79,158,255,0.28);
+      border-radius: var(--r-sm);
+      padding: 12px 16px;
+      font-size: 13px;
+      color: var(--accent2);
+      margin-bottom: 20px;
+      display: none;
+      line-height: 1.55;
+    }
 
     /* Status grid */
     .section-label {
@@ -532,6 +543,10 @@
       ⚠️ <strong>WebGPU não disponível.</strong> Use Chrome 113+, Edge 113+ ou Firefox Nightly com WebGPU habilitado.
     </div>
 
+    <div class="banner-info" id="igpu-warn">
+      ℹ️ <strong>GPU integrada detectada.</strong> Intel Iris Xe compartilha memória com a CPU — espere <strong>2–6 tok/s</strong>. Respostas chegam token a token via streaming. Para mais velocidade, use um PC com GPU discreta (NVIDIA/AMD).
+    </div>
+
     <div class="section-label">Status do Sistema</div>
     <div class="status-grid">
       <div class="status-item">
@@ -630,14 +645,15 @@
 //          Dynamic discovery — Gemma 4 will appear automatically when
 //          mlc-ai adds it to prebuiltAppConfig.model_list
 // ─────────────────────────────────────────────────────────────────────────────
-import * as webllm from "https://esm.sh/@mlc-ai/web-llm@0.2.80";
+import * as webllm from "https://esm.run/@mlc-ai/web-llm";
 
 // ── state ────────────────────────────────────────────────────────────────────
-let engine       = null;
-let selectedId   = null;
-let history      = [];      // OpenAI-style messages
-let generating   = false;
-let gpuIsHighEnd = false;
+let engine          = null;
+let selectedId      = null;
+let history         = [];      // OpenAI-style messages
+let generating      = false;
+let gpuIsHighEnd    = false;
+let isIntegratedGpu = false;
 
 const SYSTEM_PROMPT =
   "Você é um assistente prestativo e inteligente. " +
@@ -668,7 +684,13 @@ async function detectSystem() {
 
   let adapter;
   try {
-    adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" });
+    // powerPreference is ignored on Windows (crbug.com/369219127); omit it to avoid the console warning
+    const isWindows = navigator.userAgentData
+      ? (await navigator.userAgentData.getHighEntropyValues(["platform"]).catch(() => ({}))).platform === "Windows"
+      : /Win/.test(navigator.platform);
+    adapter = await navigator.gpu.requestAdapter(
+      isWindows ? undefined : { powerPreference: "high-performance" }
+    );
   } catch {}
 
   if (!adapter) {
@@ -685,13 +707,19 @@ async function detectSystem() {
     if (info) {
       gpuName = info.description || info.device || info.architecture || gpuName;
       const n = gpuName.toLowerCase();
+      const vendor = (info.vendor || "").toLowerCase();
       gpuIsHighEnd = /rtx [3456789]|rx [67]|m[123] (pro|max|ultra)|4090|3090|6900|7900|arc a7/i.test(n);
+      // Integrated GPU: Intel without Arc discrete, or generic architecture strings
+      const isIntelIntegrated = (vendor === "intel" || /intel/i.test(n)) && !/arc a[3579]/i.test(n);
+      const isGenericArch = /^gen-|^adreno|^mali|^apple/i.test(n) && !gpuIsHighEnd;
+      isIntegratedGpu = isIntelIntegrated || isGenericArch;
     }
   } catch {}
 
   const shortGpu = gpuName.length > 26 ? gpuName.slice(0, 24) + "…" : gpuName;
-  setDot("d-gpu", "ok"); setVal("v-gpu", shortGpu);
+  setDot("d-gpu", isIntegratedGpu ? "warn" : "ok"); setVal("v-gpu", shortGpu);
   window._gpuLabel = gpuName;
+  if (isIntegratedGpu) $('igpu-warn').style.display = 'block';
 
   // RAM
   const ram = navigator.deviceMemory || null;
@@ -961,7 +989,7 @@ async function sendMessage() {
       messages: [{ role: "system", content: SYSTEM_PROMPT }, ...history],
       stream:      true,
       temperature: 0.72,
-      max_tokens:  2048,
+      max_tokens:  isIntegratedGpu ? 768 : 2048,
     });
 
     // Replace indicator with live response
