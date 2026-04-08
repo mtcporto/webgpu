@@ -1,0 +1,1135 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gemma · WebGPU Local AI</title>
+  <meta name="description" content="LLM local no navegador via WebGPU — sem servidor, sem dados enviados">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:          #080811;
+      --surface:     #0f0f1c;
+      --surface2:    #161628;
+      --surface3:    #1e1e35;
+      --border:      rgba(110, 90, 255, 0.14);
+      --border-hi:   rgba(110, 90, 255, 0.45);
+      --accent:      #7c6def;
+      --accent2:     #4f9eff;
+      --accent-glow: rgba(124, 109, 239, 0.28);
+      --text:        #e2e2f0;
+      --text-dim:    #7878a0;
+      --text-bright: #ffffff;
+      --ok:          #4ade80;
+      --warn:        #fbbf24;
+      --err:         #f87171;
+      --r-sm:        8px;
+      --r-md:        14px;
+      --r-lg:        22px;
+      --r-full:      9999px;
+    }
+
+    html, body {
+      height: 100%;
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      font-size: 15px;
+    }
+
+    /* ═══════════════════════════════════════
+       SETUP SCREEN
+    ═══════════════════════════════════════ */
+    #setup {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px 16px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    #setup::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background:
+        radial-gradient(ellipse 65% 45% at 25% 15%, rgba(124,109,239,0.13) 0%, transparent 70%),
+        radial-gradient(ellipse 45% 35% at 75% 85%, rgba(79,158,255,0.09) 0%, transparent 70%);
+      pointer-events: none;
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--r-lg);
+      padding: 40px 36px;
+      max-width: 580px;
+      width: 100%;
+      position: relative;
+      box-shadow: 0 0 100px rgba(124,109,239,0.08), 0 0 0 1px var(--border);
+    }
+
+    .logo-wrap {
+      text-align: center;
+      margin-bottom: 36px;
+    }
+
+    .logo-icon {
+      width: 76px; height: 76px;
+      margin: 0 auto 16px;
+      background: linear-gradient(135deg, var(--accent) 0%, var(--accent2) 100%);
+      border-radius: 20px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 38px;
+      box-shadow: 0 8px 32px rgba(124,109,239,0.4);
+    }
+
+    h1 {
+      font-size: 26px;
+      font-weight: 700;
+      letter-spacing: -0.4px;
+      color: var(--text-bright);
+    }
+
+    .tagline {
+      color: var(--text-dim);
+      font-size: 13.5px;
+      margin-top: 4px;
+    }
+
+    /* WebGPU warning banner */
+    .banner-warn {
+      background: rgba(251,191,36,0.1);
+      border: 1px solid rgba(251,191,36,0.3);
+      border-radius: var(--r-sm);
+      padding: 12px 16px;
+      font-size: 13px;
+      color: var(--warn);
+      margin-bottom: 20px;
+      display: none;
+    }
+
+    /* Status grid */
+    .section-label {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1.2px;
+      color: var(--text-dim);
+      margin-bottom: 10px;
+    }
+
+    .status-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-bottom: 28px;
+    }
+
+    .status-item {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--r-md);
+      padding: 12px 14px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .dot {
+      width: 9px; height: 9px;
+      border-radius: 50%;
+      background: var(--text-dim);
+      flex-shrink: 0;
+      transition: background 0.3s, box-shadow 0.3s;
+    }
+    .dot.ok   { background: var(--ok);   box-shadow: 0 0 8px var(--ok); }
+    .dot.warn { background: var(--warn); }
+    .dot.err  { background: var(--err);  box-shadow: 0 0 8px var(--err); }
+
+    .status-text { overflow: hidden; }
+    .status-lbl  { font-size: 11px; color: var(--text-dim); display: block; }
+    .status-val  { font-size: 13px; font-weight: 600; color: var(--text); display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+    /* Model cards */
+    .model-cards {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-bottom: 28px;
+    }
+
+    .model-card {
+      background: var(--surface2);
+      border: 2px solid var(--border);
+      border-radius: var(--r-md);
+      padding: 14px 16px;
+      cursor: pointer;
+      transition: border-color 0.18s, background 0.18s;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .model-card:hover       { border-color: var(--border-hi); background: var(--surface3); }
+    .model-card.selected    { border-color: var(--accent); background: rgba(124,109,239,0.08); }
+
+    .model-info { flex: 1; min-width: 0; }
+    .model-name { font-weight: 600; font-size: 14px; color: var(--text-bright); }
+    .model-meta { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+
+    .model-tags { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex-shrink: 0; }
+    .tag {
+      font-size: 10.5px; font-weight: 700;
+      padding: 2px 8px;
+      border-radius: var(--r-full);
+      white-space: nowrap;
+    }
+    .tag-default  { background: rgba(124,109,239,0.22); color: var(--accent); }
+    .tag-upgrade  { background: rgba(251,191,36,0.15);  color: var(--warn); }
+    .tag-cached   { background: rgba(74,222,128,0.15);  color: var(--ok); }
+    .tag-size     { background: var(--surface3); color: var(--text-dim); }
+
+    /* No models */
+    #no-models { display: none; font-size: 13px; color: var(--err); margin-bottom: 16px; }
+
+    /* Progress */
+    #progress-wrap { display: none; margin-bottom: 20px; }
+
+    .progress-header {
+      display: flex;
+      justify-content: space-between;
+      font-size: 13px;
+      margin-bottom: 8px;
+      color: var(--text);
+    }
+
+    .bar-track {
+      height: 5px;
+      background: var(--surface3);
+      border-radius: var(--r-full);
+      overflow: hidden;
+    }
+    .bar-fill {
+      height: 100%;
+      background: linear-gradient(90deg, var(--accent), var(--accent2));
+      border-radius: var(--r-full);
+      width: 0%;
+      transition: width 0.3s ease;
+    }
+    .progress-sub {
+      font-size: 11.5px;
+      color: var(--text-dim);
+      margin-top: 6px;
+    }
+
+    /* Buttons */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 12px 24px;
+      border-radius: var(--r-md);
+      font-size: 14px;
+      font-weight: 600;
+      font-family: inherit;
+      cursor: pointer;
+      border: none;
+      transition: all 0.18s;
+    }
+    .btn-primary {
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      color: white;
+      width: 100%;
+      padding: 14px;
+      font-size: 15px;
+    }
+    .btn-primary:hover:not(:disabled) {
+      transform: translateY(-1px);
+      box-shadow: 0 8px 28px rgba(124,109,239,0.45);
+    }
+    .btn-primary:disabled { opacity: 0.45; cursor: not-allowed; transform: none; box-shadow: none; }
+
+    .btn-ghost {
+      background: transparent;
+      color: var(--text-dim);
+      border: 1px solid var(--border);
+      padding: 6px 12px;
+      border-radius: var(--r-sm);
+      font-size: 12px;
+    }
+    .btn-ghost:hover { border-color: var(--border-hi); color: var(--text); }
+
+    .setup-footer {
+      text-align: center;
+      margin-top: 12px;
+      font-size: 12px;
+      color: var(--text-dim);
+    }
+
+    /* ═══════════════════════════════════════
+       CHAT SCREEN
+    ═══════════════════════════════════════ */
+    #chat {
+      display: none;
+      flex-direction: column;
+      height: 100vh;
+      max-width: 880px;
+      margin: 0 auto;
+      width: 100%;
+    }
+
+    .chat-header {
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      flex-shrink: 0;
+    }
+
+    .header-model {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .live-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--ok);
+      box-shadow: 0 0 7px var(--ok);
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+
+    .header-title { font-weight: 600; font-size: 14px; }
+    .header-sub   { font-size: 11.5px; color: var(--text-dim); }
+
+    .header-actions { display: flex; gap: 8px; }
+
+    /* Messages */
+    #messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 24px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    #messages::-webkit-scrollbar { width: 4px; }
+    #messages::-webkit-scrollbar-track { background: transparent; }
+    #messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    .msg {
+      max-width: 86%;
+      animation: fadeUp 0.2s ease;
+    }
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(6px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    .msg.user      { align-self: flex-end; }
+    .msg.assistant { align-self: flex-start; }
+
+    .msg-sender {
+      font-size: 10.5px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      color: var(--text-dim);
+      margin-bottom: 4px;
+    }
+    .msg.user .msg-sender { text-align: right; }
+
+    .msg-bubble {
+      padding: 12px 16px;
+      border-radius: var(--r-md);
+      font-size: 14px;
+      line-height: 1.75;
+      word-break: break-word;
+    }
+    .msg.user .msg-bubble {
+      background: #1c1f40;
+      border: 1px solid rgba(124,109,239,0.25);
+      border-bottom-right-radius: 4px;
+    }
+    .msg.assistant .msg-bubble {
+      background: #111120;
+      border: 1px solid var(--border);
+      border-bottom-left-radius: 4px;
+    }
+
+    /* Markdown inside bubbles */
+    .msg-bubble p          { margin-bottom: 8px; }
+    .msg-bubble p:last-child { margin-bottom: 0; }
+    .msg-bubble strong     { color: var(--text-bright); }
+    .msg-bubble em         { font-style: italic; }
+    .msg-bubble code {
+      font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
+      background: var(--surface3);
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-size: 12.5px;
+    }
+    .msg-bubble pre {
+      background: #0b0b1a;
+      border: 1px solid var(--border);
+      border-radius: var(--r-sm);
+      padding: 12px 14px;
+      overflow-x: auto;
+      margin: 10px 0;
+    }
+    .msg-bubble pre code { background: none; padding: 0; font-size: 12.5px; }
+    .msg-bubble h1, .msg-bubble h2, .msg-bubble h3 { color: var(--text-bright); margin: 12px 0 6px; }
+    .msg-bubble h1 { font-size: 18px; }
+    .msg-bubble h2 { font-size: 16px; }
+    .msg-bubble h3 { font-size: 14px; }
+    .msg-bubble ul, .msg-bubble ol { padding-left: 20px; margin: 8px 0; }
+    .msg-bubble li  { margin-bottom: 3px; }
+    .msg-bubble hr  { border: none; border-top: 1px solid var(--border); margin: 10px 0; }
+    .msg-bubble a   { color: var(--accent2); text-decoration: none; }
+    .msg-bubble a:hover { text-decoration: underline; }
+    .msg-bubble blockquote {
+      border-left: 3px solid var(--accent);
+      padding-left: 12px;
+      color: var(--text-dim);
+      margin: 8px 0;
+    }
+
+    .msg-stats {
+      font-size: 10.5px;
+      color: var(--text-dim);
+      margin-top: 6px;
+      display: flex;
+      gap: 12px;
+    }
+
+    /* Typing indicator */
+    .typing {
+      display: flex;
+      gap: 5px;
+      align-items: center;
+      padding: 14px 16px;
+      background: #111120;
+      border: 1px solid var(--border);
+      border-radius: var(--r-md);
+      border-bottom-left-radius: 4px;
+      width: fit-content;
+    }
+    .typing-dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--text-dim);
+      animation: typeBounce 1.1s infinite;
+    }
+    .typing-dot:nth-child(2) { animation-delay: 0.18s; }
+    .typing-dot:nth-child(3) { animation-delay: 0.36s; }
+    @keyframes typeBounce {
+      0%, 70%, 100% { transform: translateY(0); opacity: 0.4; }
+      35% { transform: translateY(-6px); opacity: 1; }
+    }
+
+    /* Input area */
+    .chat-footer {
+      padding: 14px 16px;
+      border-top: 1px solid var(--border);
+      background: var(--surface);
+      flex-shrink: 0;
+    }
+    .input-wrap {
+      display: flex;
+      gap: 8px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--r-md);
+      padding: 8px;
+      transition: border-color 0.2s;
+    }
+    .input-wrap:focus-within { border-color: var(--accent); }
+
+    #user-input {
+      flex: 1;
+      background: none;
+      border: none;
+      outline: none;
+      color: var(--text);
+      font-family: inherit;
+      font-size: 14px;
+      resize: none;
+      line-height: 1.5;
+      min-height: 40px;
+      max-height: 180px;
+      padding: 4px 8px;
+    }
+    #user-input::placeholder { color: var(--text-dim); }
+
+    #send-btn {
+      background: var(--accent);
+      color: white;
+      border: none;
+      border-radius: var(--r-sm);
+      padding: 8px 18px;
+      font-size: 13px;
+      font-weight: 600;
+      font-family: inherit;
+      cursor: pointer;
+      transition: background 0.18s;
+      align-self: flex-end;
+      flex-shrink: 0;
+    }
+    #send-btn:hover:not(:disabled) { background: #9580ff; }
+    #send-btn:disabled { opacity: 0.38; cursor: not-allowed; }
+
+    .input-hint {
+      font-size: 11px;
+      color: var(--text-dim);
+      text-align: center;
+      margin-top: 7px;
+    }
+
+    /* ═══════════════════════════════════════
+       RESPONSIVE
+    ═══════════════════════════════════════ */
+    @media (max-width: 600px) {
+      .card { padding: 28px 20px; }
+      .status-grid { grid-template-columns: 1fr; }
+      h1 { font-size: 22px; }
+      .msg { max-width: 96%; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ════════════════════════════════════
+     SETUP SCREEN
+════════════════════════════════════ -->
+<div id="setup">
+  <div class="card">
+
+    <div class="logo-wrap">
+      <div class="logo-icon">🧠</div>
+      <h1>Gemma · WebGPU</h1>
+      <p class="tagline">LLM local no seu navegador · sem servidor · sem rastreamento</p>
+    </div>
+
+    <div class="banner-warn" id="webgpu-warn">
+      ⚠️ <strong>WebGPU não disponível.</strong> Use Chrome 113+, Edge 113+ ou Firefox Nightly com WebGPU habilitado.
+    </div>
+
+    <div class="section-label">Status do Sistema</div>
+    <div class="status-grid">
+      <div class="status-item">
+        <div class="dot" id="d-webgpu"></div>
+        <div class="status-text">
+          <span class="status-lbl">WebGPU</span>
+          <span class="status-val" id="v-webgpu">Verificando…</span>
+        </div>
+      </div>
+      <div class="status-item">
+        <div class="dot" id="d-gpu"></div>
+        <div class="status-text">
+          <span class="status-lbl">GPU</span>
+          <span class="status-val" id="v-gpu">Detectando…</span>
+        </div>
+      </div>
+      <div class="status-item">
+        <div class="dot" id="d-ram"></div>
+        <div class="status-text">
+          <span class="status-lbl">Memória</span>
+          <span class="status-val" id="v-ram">…</span>
+        </div>
+      </div>
+      <div class="status-item">
+        <div class="dot" id="d-cache"></div>
+        <div class="status-text">
+          <span class="status-lbl">Cache local</span>
+          <span class="status-val" id="v-cache">Verificando…</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="section-label">Modelo</div>
+    <div class="model-cards" id="model-cards">
+      <!-- populated by JS -->
+    </div>
+    <div id="no-models">❌ Nenhum modelo encontrado. Verifique sua conexão.</div>
+
+    <div id="progress-wrap">
+      <div class="progress-header">
+        <span id="p-text">Preparando…</span>
+        <span id="p-pct">0%</span>
+      </div>
+      <div class="bar-track">
+        <div class="bar-fill" id="p-bar"></div>
+      </div>
+      <div class="progress-sub" id="p-sub"></div>
+    </div>
+
+    <button class="btn btn-primary" id="start-btn" disabled>
+      <span id="start-label">Carregar Modelo</span>
+    </button>
+    <p class="setup-footer">O modelo fica em cache local após o 1.º download · ~2–7 GB dependendo do modelo</p>
+
+  </div>
+</div>
+
+<!-- ════════════════════════════════════
+     CHAT SCREEN
+════════════════════════════════════ -->
+<div id="chat">
+
+  <div class="chat-header">
+    <div class="header-model">
+      <div class="live-dot"></div>
+      <div>
+        <div class="header-title" id="h-model">Gemma</div>
+        <div class="header-sub"  id="h-sub">WebGPU · Local</div>
+      </div>
+    </div>
+    <div class="header-actions">
+      <button class="btn btn-ghost" id="btn-clear">Limpar</button>
+      <button class="btn btn-ghost" id="btn-back">Trocar modelo</button>
+    </div>
+  </div>
+
+  <div id="messages"></div>
+
+  <div class="chat-footer">
+    <div class="input-wrap">
+      <textarea id="user-input" rows="1" placeholder="Mensagem para Gemma…" disabled></textarea>
+      <button id="send-btn" disabled>Enviar</button>
+    </div>
+    <p class="input-hint">Enter para enviar &nbsp;·&nbsp; Shift+Enter para nova linha</p>
+  </div>
+
+</div>
+
+<!-- ════════════════════════════════════
+     APP LOGIC
+════════════════════════════════════ -->
+<script type="module">
+// ─────────────────────────────────────────────────────────────────────────────
+// Engine : WebLLM (mlc-ai/web-llm)  https://webllm.mlc.ai
+// Models : Gemma 2-2B (default) + Gemma 2-9B (upgrade)
+//          Dynamic discovery — Gemma 4 will appear automatically when
+//          mlc-ai adds it to prebuiltAppConfig.model_list
+// ─────────────────────────────────────────────────────────────────────────────
+import * as webllm from "https://esm.sh/@mlc-ai/web-llm@0.2.80";
+
+// ── state ────────────────────────────────────────────────────────────────────
+let engine       = null;
+let selectedId   = null;
+let history      = [];      // OpenAI-style messages
+let generating   = false;
+let gpuIsHighEnd = false;
+
+const SYSTEM_PROMPT =
+  "Você é um assistente prestativo e inteligente. " +
+  "Responda sempre em português quando o usuário escrever em português. " +
+  "Seja direto, claro e objetivo.";
+
+// ── shortcuts ────────────────────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+const setup   = $("setup");
+const chat    = $("chat");
+const startBtn = $("start-btn");
+
+// ── boot ─────────────────────────────────────────────────────────────────────
+async function init() {
+  await detectSystem();
+  buildModelList();
+}
+
+// ── system detection ─────────────────────────────────────────────────────────
+async function detectSystem() {
+  // WebGPU
+  if (!navigator.gpu) {
+    setDot("d-webgpu", "err"); setVal("v-webgpu", "Não suportado");
+    $("webgpu-warn").style.display = "block";
+    startBtn.disabled = true;
+    return;
+  }
+
+  let adapter;
+  try {
+    adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" });
+  } catch {}
+
+  if (!adapter) {
+    setDot("d-webgpu", "warn"); setVal("v-webgpu", "Sem adaptador");
+    return;
+  }
+
+  setDot("d-webgpu", "ok"); setVal("v-webgpu", "Disponível ✓");
+
+  // GPU name
+  let gpuName = "GPU WebGPU";
+  try {
+    const info = adapter.info ?? await adapter.requestAdapterInfo?.();
+    if (info) {
+      gpuName = info.description || info.device || info.architecture || gpuName;
+      const n = gpuName.toLowerCase();
+      gpuIsHighEnd = /rtx [3456789]|rx [67]|m[123] (pro|max|ultra)|4090|3090|6900|7900|arc a7/i.test(n);
+    }
+  } catch {}
+
+  const shortGpu = gpuName.length > 26 ? gpuName.slice(0, 24) + "…" : gpuName;
+  setDot("d-gpu", "ok"); setVal("v-gpu", shortGpu);
+  window._gpuLabel = gpuName;
+
+  // RAM
+  const ram = navigator.deviceMemory || null;
+  if (ram) {
+    setDot("d-ram", ram >= 8 ? "ok" : "warn");
+    setVal("v-ram", `≥ ${ram} GB`);
+    if (ram >= 8) gpuIsHighEnd = gpuIsHighEnd || true; // allow 9B if enough RAM
+  } else {
+    setDot("d-ram", "warn"); setVal("v-ram", "Desconhecida");
+  }
+
+  // Cache
+  try {
+    const c = await caches.open("webllm/mlc");
+    const keys = await c.keys();
+    if (keys.length > 0) {
+      setDot("d-cache", "ok"); setVal("v-cache", `${keys.length} ficheiros em cache`);
+    } else {
+      setDot("d-cache", "warn"); setVal("v-cache", "Vazio — 1.º download");
+    }
+  } catch {
+    setDot("d-cache", "warn"); setVal("v-cache", "N/D");
+  }
+}
+
+// ── model list ───────────────────────────────────────────────────────────────
+// Priority: Gemma 4 > Gemma 3 > Gemma 2 > Gemma 1
+// Show at most: 1 small (≤3B) + 1 medium/large (4-10B)
+function buildModelList() {
+  const all = webllm.prebuiltAppConfig.model_list;
+
+  // Collect only LLM Gemma models (skip -jpn variants and embedding models)
+  const gemmas = all.filter(m => {
+    const id = m.model_id.toLowerCase();
+    return id.includes("gemma") &&
+           !id.includes("jpn") &&
+           (m.model_type === undefined || m.model_type === 0); // LLM only
+  });
+
+  if (gemmas.length === 0) {
+    $("no-models").style.display = "block";
+    return;
+  }
+
+  // Score each model (higher = newer/better)
+  const score = m => {
+    const id = m.model_id.toLowerCase();
+    let s = 0;
+    if (id.includes("gemma-4") || id.includes("gemma4"))       s += 400;
+    else if (id.includes("gemma-3") || id.includes("gemma3"))  s += 300;
+    else if (id.includes("gemma-2") || id.includes("gemma2"))  s += 200;
+    else                                                         s += 100;
+    if (id.includes("q4f16")) s += 10;
+    if (id.includes("q4f32")) s += 8;
+    if (id.includes("-1k"))   s -= 5;  // shorter context variant, show less prominent
+    return s;
+  };
+
+  // Classify by param size
+  function sizeClass(m) {
+    const id = m.model_id.toLowerCase();
+    if (/\b(1b|2b|2\.6b|e2b)\b/.test(id)) return "small";
+    if (/\b(4b|e4b|7b|8b|9b)\b/.test(id)) return "medium";
+    return "other";
+  }
+
+  const ranked = [...gemmas].sort((a, b) => score(b) - score(a));
+
+  // Pick best small and best medium (no -1k duplicates)
+  const small  = ranked.filter(m => sizeClass(m) === "small"  && !m.model_id.includes("-1k"))[0];
+  const medium = ranked.filter(m => sizeClass(m) === "medium" && !m.model_id.includes("-1k"))[0];
+
+  // If we can't classify, just show top 2
+  const toShow = [];
+  if (small)  toShow.push({ m: small,  tier: "small" });
+  if (medium) toShow.push({ m: medium, tier: "medium" });
+  if (toShow.length === 0) {
+    const top = ranked.filter(m => !m.model_id.includes("-1k")).slice(0, 2);
+    top.forEach((m, i) => toShow.push({ m, tier: i === 0 ? "small" : "medium" }));
+  }
+
+  // Decide default
+  const defaultTier = gpuIsHighEnd ? "medium" : "small";
+
+  const container = $("model-cards");
+  container.innerHTML = "";
+
+  toShow.forEach(({ m, tier }) => {
+    const isDefault = tier === defaultTier || toShow.length === 1;
+    const card = makeModelCard(m, tier, isDefault);
+    container.appendChild(card);
+    if (isDefault && !selectedId) selectedId = m.model_id;
+  });
+
+  if (!selectedId && toShow.length) {
+    selectedId = toShow[0].m.model_id;
+    container.firstChild?.classList.add("selected");
+  }
+
+  startBtn.disabled = false;
+  updateCacheTags(toShow.map(t => t.m.model_id));
+}
+
+function makeModelCard(modelRecord, tier, isDefault) {
+  const id   = modelRecord.model_id;
+  const vram = modelRecord.vram_required_MB
+    ? (modelRecord.vram_required_MB / 1024).toFixed(1) + " GB VRAM"
+    : "VRAM desconhecida";
+
+  // Human-readable name: strip quantization suffix
+  const friendlyName = id
+    .replace(/-q[0-9]f[0-9]+_[0-9]-MLC.*$/, "")
+    .replace(/-/g, " ");
+
+  const sizeLabel = tier === "small" ? "~2B" : "~9B";
+
+  const card      = document.createElement("div");
+  card.className  = "model-card" + (isDefault ? " selected" : "");
+  card.dataset.id = id;
+
+  card.innerHTML = `
+    <div class="model-info">
+      <div class="model-name">${friendlyName}</div>
+      <div class="model-meta">${vram} · Contexto 4k</div>
+    </div>
+    <div class="model-tags">
+      <span class="tag ${isDefault ? "tag-default" : "tag-upgrade"}" id="tag-role-${id}">
+        ${isDefault ? "Recomendado" : "Avançado"}
+      </span>
+      <span class="tag tag-size">${sizeLabel}</span>
+      <span class="tag tag-cached" id="tag-cache-${sanitizeId(id)}" style="display:none">Em cache ✓</span>
+    </div>`;
+
+  card.addEventListener("click", () => {
+    document.querySelectorAll(".model-card").forEach(c => c.classList.remove("selected"));
+    card.classList.add("selected");
+    selectedId = id;
+  });
+
+  return card;
+}
+
+async function updateCacheTags(modelIds) {
+  try {
+    const c    = await caches.open("webllm/mlc");
+    const keys = await c.keys();
+    const urls = new Set(keys.map(r => r.url));
+    modelIds.forEach(id => {
+      if ([...urls].some(u => u.includes(id.replace(/-MLC.*$/, "")))) {
+        const el = $(`tag-cache-${sanitizeId(id)}`);
+        if (el) el.style.display = "inline";
+      }
+    });
+  } catch {}
+}
+
+// ── load engine ──────────────────────────────────────────────────────────────
+startBtn.addEventListener("click", async () => {
+  if (!selectedId) return;
+  startBtn.disabled = true;
+  const pw = $("progress-wrap");
+  pw.style.display = "block";
+  $("p-text").textContent = "Iniciando carregamento…";
+
+  try {
+    engine = await webllm.CreateMLCEngine(selectedId, {
+      appConfig: webllm.prebuiltAppConfig,
+      initProgressCallback: onProgress,
+    });
+    switchToChat();
+  } catch (err) {
+    $("p-text").textContent = "Erro: " + (err.message || err);
+    $("p-text").style.color = "var(--err)";
+    startBtn.disabled = false;
+    console.error("[WebLLM] load error:", err);
+  }
+});
+
+function onProgress(report) {
+  const pct    = Math.round((report.progress || 0) * 100);
+  const text   = report.text || "";
+  $("p-bar").style.width = pct + "%";
+  $("p-pct").textContent = pct + "%";
+  $("p-text").textContent = text.length > 70 ? text.slice(0, 68) + "…" : text;
+
+  const shardMatch = text.match(/(\d+)\s*\/\s*(\d+)/);
+  if (shardMatch) {
+    $("p-sub").textContent = `Fragmento (shard) ${shardMatch[1]} de ${shardMatch[2]} — aguarde, isso só acontece na primeira vez.`;
+  } else if (pct === 100) {
+    $("p-sub").textContent = "Modelo carregado na GPU ✓";
+  } else if (text.toLowerCase().includes("gpu") || text.toLowerCase().includes("webgpu")) {
+    $("p-sub").textContent = "Carregando pesos na VRAM via WebGPU…";
+  }
+}
+
+// ── switch screens ────────────────────────────────────────────────────────────
+function switchToChat() {
+  setup.style.display = "none";
+  chat.style.display  = "flex";
+
+  const friendlyName = selectedId
+    .replace(/-q[0-9]f[0-9]+_[0-9]-MLC.*$/, "")
+    .replace(/-/g, " ");
+
+  $("h-model").textContent = friendlyName;
+  $("h-sub").textContent   =
+    `WebGPU · ${(window._gpuLabel || "GPU Local").slice(0, 32)} · 100% privado`;
+
+  $("user-input").disabled = false;
+  $("send-btn").disabled   = false;
+  $("user-input").focus();
+
+  addMsg("assistant",
+    `Olá! Sou o **${friendlyName}**, rodando diretamente no seu navegador via WebGPU.\n\n` +
+    `Nada é enviado para servidores — toda a inferência acontece locally na sua GPU. Como posso ajudar?`
+  );
+}
+
+// ── chat ──────────────────────────────────────────────────────────────────────
+function addMsg(role, mdText) {
+  const wrap    = document.createElement("div");
+  wrap.className = `msg ${role}`;
+
+  const sender  = role === "user" ? "Você" : "Gemma";
+  wrap.innerHTML =
+    `<div class="msg-sender">${sender}</div>` +
+    `<div class="msg-bubble">${renderMd(mdText)}</div>`;
+
+  $("messages").appendChild(wrap);
+  scrollBottom();
+  return wrap;
+}
+
+function addTypingIndicator() {
+  const wrap    = document.createElement("div");
+  wrap.className = "msg assistant";
+  wrap.id        = "typing";
+  wrap.innerHTML =
+    `<div class="msg-sender">Gemma</div>` +
+    `<div class="typing"><div class="typing-dot"></div><div class="typing-dot"></div><div class="typing-dot"></div></div>`;
+  $("messages").appendChild(wrap);
+  scrollBottom();
+  return wrap;
+}
+
+async function sendMessage() {
+  if (generating) return;
+  const text = $("user-input").value.trim();
+  if (!text) return;
+
+  $("user-input").value = "";
+  autoResize($("user-input"));
+  generating = true;
+  $("send-btn").disabled   = true;
+  $("user-input").disabled = true;
+
+  addMsg("user", text);
+  history.push({ role: "user", content: text });
+
+  const indicator = addTypingIndicator();
+
+  try {
+    const t0         = Date.now();
+    let   tokenCount = 0;
+
+    const stream = await engine.chat.completions.create({
+      messages: [{ role: "system", content: SYSTEM_PROMPT }, ...history],
+      stream:      true,
+      temperature: 0.72,
+      max_tokens:  2048,
+    });
+
+    // Replace indicator with live response
+    indicator.remove();
+    const respMsg  = addMsg("assistant", "");
+    const bubble   = respMsg.querySelector(".msg-bubble");
+    let   fullText = "";
+
+    for await (const chunk of stream) {
+      const delta = chunk.choices[0]?.delta?.content || "";
+      if (delta) {
+        fullText   += delta;
+        tokenCount++;
+        bubble.innerHTML = renderMd(fullText);
+        scrollBottom();
+      }
+    }
+
+    // Stats row
+    const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+    const tps     = (tokenCount / (elapsed || 1)).toFixed(1);
+    const stats   = document.createElement("div");
+    stats.className = "msg-stats";
+    stats.innerHTML =
+      `<span>${tokenCount} tokens</span>` +
+      `<span>${tps} tok/s</span>` +
+      `<span>${elapsed}s</span>`;
+    respMsg.appendChild(stats);
+
+    history.push({ role: "assistant", content: fullText });
+
+  } catch (err) {
+    indicator.remove();
+    addMsg("assistant", `⚠️ Erro na geração: ${err.message || err}`);
+    console.error("[WebLLM] generation error:", err);
+  } finally {
+    generating               = false;
+    $("send-btn").disabled   = false;
+    $("user-input").disabled = false;
+    $("user-input").focus();
+  }
+}
+
+$("send-btn").addEventListener("click", sendMessage);
+
+$("user-input").addEventListener("keydown", e => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+});
+
+$("user-input").addEventListener("input", () => autoResize($("user-input")));
+
+$("btn-clear").addEventListener("click", () => {
+  history = [];
+  $("messages").innerHTML = "";
+  addMsg("assistant", "Conversa limpa. Como posso ajudar?");
+});
+
+$("btn-back").addEventListener("click", () => {
+  if (!confirm("Descarregar o modelo atual e trocar? O modelo ficará no cache.")) return;
+  engine       = null;
+  history      = [];
+  $("messages").innerHTML = "";
+  $("user-input").disabled = true;
+  $("send-btn").disabled   = true;
+  chat.style.display  = "none";
+  setup.style.display = "flex";
+  $("progress-wrap").style.display = "none";
+  $("p-bar").style.width  = "0%";
+  $("p-pct").textContent  = "0%";
+  $("p-text").textContent = "";
+  $("p-text").style.color = "";
+  startBtn.disabled = false;
+});
+
+// ── markdown renderer ─────────────────────────────────────────────────────────
+function renderMd(raw) {
+  if (!raw) return "";
+
+  // 1. Extract fenced code blocks before escaping HTML
+  const blocks = [];
+  let md = raw.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
+    const idx = blocks.length;
+    const escaped = code.trim()
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    blocks.push(`<pre><code class="lang-${lang}">${escaped}</code></pre>`);
+    return `\x02BLOCK${idx}\x03`;
+  });
+
+  // 2. Escape remaining HTML
+  md = md.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+  // 3. Inline elements
+  md = md.replace(/`([^`\n]+)`/g, "<code>$1</code>");
+  md = md.replace(/\*\*\*(.+?)\*\*\*/g, "<strong><em>$1</em></strong>");
+  md = md.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  md = md.replace(/\*([^*\n]+)\*/g, "<em>$1</em>");
+  md = md.replace(/~~(.+?)~~/g, "<del>$1</del>");
+  md = md.replace(/\[([^\]]+)\]\((https?:\/\/[^\)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+
+  // 4. Block elements (process line by line)
+  const lines      = md.split("\n");
+  const result     = [];
+  let   ulOpen     = false;
+  let   olOpen     = false;
+
+  function closeList() {
+    if (ulOpen) { result.push("</ul>"); ulOpen = false; }
+    if (olOpen) { result.push("</ol>"); olOpen = false; }
+  }
+
+  for (const line of lines) {
+    if (line.startsWith("\x02BLOCK")) { closeList(); result.push(line); continue; }
+    if (/^#{1,6} /.test(line)) {
+      closeList();
+      const level = line.match(/^(#{1,6}) /)[1].length;
+      result.push(`<h${level}>${line.slice(level + 1)}</h${level}>`);
+      continue;
+    }
+    if (/^---+$/.test(line.trim())) { closeList(); result.push("<hr>"); continue; }
+    if (/^> /.test(line)) {
+      closeList(); result.push(`<blockquote>${line.slice(2)}</blockquote>`); continue;
+    }
+    const olMatch = line.match(/^\d+\. (.+)$/);
+    if (olMatch) {
+      if (ulOpen) { result.push("</ul>"); ulOpen = false; }
+      if (!olOpen) { result.push("<ol>"); olOpen = true; }
+      result.push(`<li>${olMatch[1]}</li>`);
+      continue;
+    }
+    if (/^[-*] (.+)$/.test(line)) {
+      if (olOpen) { result.push("</ol>"); olOpen = false; }
+      if (!ulOpen) { result.push("<ul>"); ulOpen = true; }
+      result.push(`<li>${line.replace(/^[-*] /, "")}</li>`);
+      continue;
+    }
+    if (line.trim() === "") {
+      closeList(); result.push(""); continue;
+    }
+    // Default: paragraph line
+    closeList();
+    result.push(line);
+  }
+  closeList();
+
+  // 5. Wrap paragraph-like content
+  let html = result.join("\n");
+  html = html.replace(/^(?!<[houpbdlr]|<pre|\x02)(.+)$/gm, "<p>$1</p>");
+
+  // 6. Restore code blocks
+  blocks.forEach((b, i) => { html = html.replace(`\x02BLOCK${i}\x03`, b); });
+
+  return html;
+}
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+function setDot(id, cls)  { $(id).className = `dot ${cls}`; }
+function setVal(id, text) { $(id).textContent = text; }
+function scrollBottom()   { const m = $("messages"); m.scrollTop = m.scrollHeight; }
+function sanitizeId(v)    { return v.replace(/[^a-zA-Z0-9]/g, "_"); }
+
+function autoResize(el) {
+  el.style.height = "auto";
+  el.style.height = Math.min(el.scrollHeight, 180) + "px";
+}
+
+// ── start ─────────────────────────────────────────────────────────────────────
+init().catch(console.error);
+</script>
+
+</body>
+</html>
