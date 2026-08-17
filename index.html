@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Gemma · WebGPU Local AI</title>
   <meta name="description" content="LLM local no navegador via WebGPU — sem servidor, sem dados enviados">
+  <link rel="icon" href="data:,">
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -549,11 +550,11 @@
     </div>
 
     <div class="banner-warn" id="webgpu-warn">
-      ⚠️ <strong>WebGPU não disponível.</strong> O site pode tentar o modo local por CPU, mas ele é consideravelmente mais lento.
+      ⚠️ <strong>WebGPU não disponível.</strong> Use Chrome atualizado em Android ou um navegador com aceleração de hardware habilitada.
     </div>
 
     <div class="banner-warn" id="noadapter-warn">
-      ⚠️ <strong>Sem adaptador WebGPU.</strong> O navegador não liberou a GPU para esta página. Você ainda pode tentar o modo local por CPU; no S24, prefira Chrome atualizado para usar a GPU.
+      ⚠️ <strong>Sem adaptador WebGPU.</strong> O navegador não liberou a GPU para esta página. No S24, use Chrome atualizado e verifique <em>chrome://gpu</em>.
     </div>
 
     <div class="banner-info" id="igpu-warn">
@@ -657,7 +658,7 @@
 // The JS API is still an early preview, so keep the supported web packages
 // explicit instead of relying on a runtime-specific model catalogue.
 // ─────────────────────────────────────────────────────────────────────────────
-import { Backend, Engine } from "https://cdn.jsdelivr.net/npm/@litert-lm/core@0.12.0/+esm";
+import { Engine } from "https://cdn.jsdelivr.net/npm/@litert-lm/core@0.12.0/+esm";
 
 // ── state ────────────────────────────────────────────────────────────────────
 let engine          = null;
@@ -666,7 +667,9 @@ let selectedId      = null;
 let generating      = false;
 let gpuIsHighEnd    = false;
 let isIntegratedGpu = false;
-let executionMode   = "gpu";
+let webGpuReady     = false;
+
+const MODEL_CACHE_NAME = "gemma-web-models-v1";
 
 const MODELS = [
   {
@@ -710,7 +713,7 @@ async function detectSystem() {
   if (!navigator.gpu) {
     setDot("d-webgpu", "err"); setVal("v-webgpu", "Não suportado");
     $("webgpu-warn").style.display = "block";
-    enableCpuFallback();
+    setUnavailableSystemState();
     return;
   }
 
@@ -728,11 +731,12 @@ async function detectSystem() {
   if (!adapter) {
     setDot("d-webgpu", "warn"); setVal("v-webgpu", "Sem adaptador");
     $('noadapter-warn').style.display = 'block';
-    enableCpuFallback();
+    setUnavailableSystemState();
     return;
   }
 
   setDot("d-webgpu", "ok"); setVal("v-webgpu", "Disponível ✓");
+  webGpuReady = true;
 
   // GPU name
   let gpuName = "GPU WebGPU";
@@ -764,24 +768,19 @@ async function detectSystem() {
     setDot("d-ram", "warn"); setVal("v-ram", "Desconhecida");
   }
 
-  // LiteRT-LM downloads through the browser. Cache persistence is controlled by
-  // the browser, so avoid reporting a WebLLM-specific Cache Storage namespace.
-  setDot("d-cache", "warn");
-  setVal("v-cache", "Gerenciado pelo navegador");
+  await updateModelCacheStatus();
 }
 
-function enableCpuFallback() {
-  executionMode = "cpu";
+function setUnavailableSystemState() {
   setDot("d-gpu", "warn");
-  setVal("v-gpu", "CPU / WASM");
+  setVal("v-gpu", "Sem WebGPU");
 
   const ram = navigator.deviceMemory || null;
   setDot("d-ram", ram && ram >= 8 ? "ok" : "warn");
   setVal("v-ram", ram ? `≥ ${ram} GB` : "Desconhecida");
   setDot("d-cache", "warn");
-  setVal("v-cache", "Gerenciado pelo navegador");
-  $("start-label").textContent = "Tentar modo CPU";
-  $("setup-footer").textContent = "Modo CPU: use apenas Gemma 4 E2B · ~1,9 GB · mais lento que WebGPU";
+  setVal("v-cache", "Aguardando WebGPU");
+  $("start-label").textContent = "WebGPU indisponível";
 }
 
 // ── model list ───────────────────────────────────────────────────────────────
@@ -790,14 +789,13 @@ function buildModelList() {
   container.innerHTML = "";
   selectedId = null;
 
-  const availableModels = executionMode === "cpu" ? MODELS.slice(0, 1) : MODELS;
-  availableModels.forEach((model, index) => {
+  MODELS.forEach((model, index) => {
     const isDefault = index === 0;
     const card = makeModelCard(model, isDefault);
     container.appendChild(card);
     if (isDefault) selectedId = model.id;
   });
-  startBtn.disabled = !selectedId;
+  startBtn.disabled = !webGpuReady || !selectedId;
 }
 
 function makeModelCard(model, isDefault) {
@@ -830,9 +828,62 @@ function makeModelCard(model, isDefault) {
   return card;
 }
 
+async function updateModelCacheStatus() {
+  try {
+    const cache = await caches.open(MODEL_CACHE_NAME);
+    const cachedModels = [];
+    for (const model of MODELS) {
+      if (await cache.match(model.url)) cachedModels.push(model.name);
+    }
+    if (cachedModels.length) {
+      setDot("d-cache", "ok");
+      setVal("v-cache", `${cachedModels.join(", ")} em cache`);
+    } else {
+      setDot("d-cache", "warn");
+      setVal("v-cache", "Vazio — 1.º download");
+    }
+  } catch {
+    setDot("d-cache", "warn");
+    setVal("v-cache", "Indisponível");
+  }
+}
+
+async function getModelSource(model) {
+  const cache = await caches.open(MODEL_CACHE_NAME);
+  const cached = await cache.match(model.url);
+  if (cached?.body) {
+    $("p-text").textContent = "Abrindo modelo salvo localmente…";
+    $("p-sub").textContent = "O download anterior foi reutilizado.";
+    return cached.body;
+  }
+
+  $("p-text").textContent = "Baixando e salvando o modelo…";
+  $("p-sub").textContent = "O arquivo será mantido localmente para as próximas visitas.";
+  const response = await fetch(model.url);
+  if (!response.ok || !response.body) {
+    throw new Error(`Não foi possível baixar o modelo (${response.status}).`);
+  }
+
+  try {
+    if (navigator.storage?.persist) await navigator.storage.persist();
+    await cache.put(model.url, response);
+    const saved = await cache.match(model.url);
+    if (saved?.body) return saved.body;
+  } catch (error) {
+    console.warn("[Cache] Não foi possível guardar o modelo localmente:", error);
+    $("p-sub").textContent = "O navegador não permitiu guardar o arquivo; ele será usado apenas nesta sessão.";
+  }
+
+  const sessionResponse = await fetch(model.url);
+  if (!sessionResponse.ok || !sessionResponse.body) {
+    throw new Error(`Não foi possível baixar o modelo (${sessionResponse.status}).`);
+  }
+  return sessionResponse.body;
+}
+
 // ── load engine ──────────────────────────────────────────────────────────────
 startBtn.addEventListener("click", async () => {
-  if (!selectedId) return;
+  if (!webGpuReady || !selectedId) return;
   const model = MODELS.find(item => item.id === selectedId);
   if (!model) return;
 
@@ -845,9 +896,9 @@ startBtn.addEventListener("click", async () => {
   $("p-sub").textContent = "Na primeira vez, esse processo pode levar alguns minutos.";
 
   try {
+    const modelSource = await getModelSource(model);
     engine = await Engine.create({
-      model: model.url,
-      backend: executionMode === "cpu" ? Backend.CPU_ARTISAN : Backend.GPU_ARTISAN,
+      model: modelSource,
     });
     conversation = await engine.createConversation({
       preface: {
@@ -873,7 +924,7 @@ function switchToChat() {
 
   $("h-model").textContent = friendlyName;
   $("h-sub").textContent   =
-    `${executionMode === "cpu" ? "CPU / WASM" : "WebGPU"} · ${(window._gpuLabel || "Processamento local").slice(0, 32)} · 100% privado`;
+    `WebGPU · ${(window._gpuLabel || "GPU Local").slice(0, 32)} · 100% privado`;
 
   $("user-input").disabled = false;
   $("send-btn").disabled   = false;
@@ -1034,7 +1085,8 @@ $("btn-back").addEventListener("click", async () => {
   $("p-pct").textContent  = "0%";
   $("p-text").textContent = "";
   $("p-text").style.color = "";
-  startBtn.disabled = false;
+  startBtn.disabled = !webGpuReady;
+  updateModelCacheStatus();
 });
 
 // ── markdown renderer ─────────────────────────────────────────────────────────
