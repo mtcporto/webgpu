@@ -235,6 +235,14 @@
       width: 0%;
       transition: width 0.3s ease;
     }
+    .bar-fill.loading {
+      width: 35%;
+      animation: loadingBar 1.4s ease-in-out infinite;
+    }
+    @keyframes loadingBar {
+      0%, 100% { transform: translateX(-100%); }
+      50% { transform: translateX(220%); }
+    }
     .progress-sub {
       font-size: 11.5px;
       color: var(--text-dim);
@@ -604,7 +612,7 @@
     <button class="btn btn-primary" id="start-btn" disabled>
       <span id="start-label">Carregar Modelo</span>
     </button>
-    <p class="setup-footer">O modelo fica em cache local após o 1.º download · ~2–7 GB dependendo do modelo</p>
+    <p class="setup-footer">O navegador pode reutilizar o download do modelo · ~1,9–2,8 GB</p>
 
   </div>
 </div>
@@ -645,20 +653,38 @@
 ════════════════════════════════════ -->
 <script type="module">
 // ─────────────────────────────────────────────────────────────────────────────
-// Engine : WebLLM (mlc-ai/web-llm)  https://webllm.mlc.ai
-// Models : Gemma 2-2B (default) + Gemma 2-9B (upgrade)
-//          Dynamic discovery — Gemma 4 will appear automatically when
-//          mlc-ai adds it to prebuiltAppConfig.model_list
+// Engine : LiteRT-LM, optimized by Google for on-device Gemma execution.
+// The JS API is still an early preview, so keep the supported web packages
+// explicit instead of relying on a runtime-specific model catalogue.
 // ─────────────────────────────────────────────────────────────────────────────
-import * as webllm from "https://esm.run/@mlc-ai/web-llm";
+import { Engine } from "https://cdn.jsdelivr.net/npm/@litert-lm/core@0.12.0/+esm";
 
 // ── state ────────────────────────────────────────────────────────────────────
 let engine          = null;
+let conversation     = null;
 let selectedId      = null;
-let history         = [];      // OpenAI-style messages
 let generating      = false;
 let gpuIsHighEnd    = false;
 let isIntegratedGpu = false;
+
+const MODELS = [
+  {
+    id: "gemma-4-e2b",
+    name: "Gemma 4 E2B",
+    description: "Melhor equilíbrio para celular",
+    size: "~1,9 GB",
+    context: "Chat de texto",
+    url: "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it-web.litertlm",
+  },
+  {
+    id: "gemma-4-e4b",
+    name: "Gemma 4 E4B",
+    description: "Mais capaz; exige mais memória",
+    size: "~2,8 GB",
+    context: "Chat de texto",
+    url: "https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm/resolve/main/gemma-4-E4B-it-web.litertlm",
+  },
+];
 
 const SYSTEM_PROMPT =
   "Você é um assistente prestativo e inteligente. " +
@@ -733,126 +759,35 @@ async function detectSystem() {
   if (ram) {
     setDot("d-ram", ram >= 8 ? "ok" : "warn");
     setVal("v-ram", `≥ ${ram} GB`);
-    if (ram >= 8) gpuIsHighEnd = gpuIsHighEnd || true; // allow 9B if enough RAM
   } else {
     setDot("d-ram", "warn"); setVal("v-ram", "Desconhecida");
   }
 
-  // Cache
-  try {
-    const c = await caches.open("webllm/mlc");
-    const keys = await c.keys();
-    if (keys.length > 0) {
-      setDot("d-cache", "ok"); setVal("v-cache", `${keys.length} ficheiros em cache`);
-    } else {
-      setDot("d-cache", "warn"); setVal("v-cache", "Vazio — 1.º download");
-    }
-  } catch {
-    setDot("d-cache", "warn"); setVal("v-cache", "N/D");
-  }
+  // LiteRT-LM downloads through the browser. Cache persistence is controlled by
+  // the browser, so avoid reporting a WebLLM-specific Cache Storage namespace.
+  setDot("d-cache", "warn");
+  setVal("v-cache", "Gerenciado pelo navegador");
 }
 
 // ── model list ───────────────────────────────────────────────────────────────
-// Priority: Gemma 4 > Gemma 3 > Gemma 2 > Gemma 1
-// Show at most: 1 small (≤3B) + 1 medium/large (4-10B)
 function buildModelList() {
-  const all = webllm.prebuiltAppConfig.model_list;
-
-  // Collect only LLM Gemma models (skip -jpn variants and embedding models)
-  const gemmas = all.filter(m => {
-    const id = m.model_id.toLowerCase();
-    return id.includes("gemma") &&
-           !id.includes("jpn") &&
-           (m.model_type === undefined || m.model_type === 0); // LLM only
-  });
-
-  if (gemmas.length === 0) {
-    $("no-models").style.display = "block";
-    return;
-  }
-
-  // Score each model (higher = newer/better)
-  const score = m => {
-    const id = m.model_id.toLowerCase();
-    let s = 0;
-    if (id.includes("gemma-4") || id.includes("gemma4"))       s += 400;
-    else if (id.includes("gemma-3") || id.includes("gemma3"))  s += 300;
-    else if (id.includes("gemma-2") || id.includes("gemma2"))  s += 200;
-    else                                                         s += 100;
-    if (id.includes("q4f16")) s += 10;
-    if (id.includes("q4f32")) s += 8;
-    if (id.includes("-1k"))   s -= 5;  // shorter context variant, show less prominent
-    return s;
-  };
-
-  // Classify by param size
-  function sizeClass(m) {
-    const id = m.model_id.toLowerCase();
-    if (/\b(1b|2b|2\.6b|e2b)\b/.test(id)) return "small";
-    if (/\b(4b|e4b|7b|8b|9b)\b/.test(id)) return "medium";
-    return "other";
-  }
-
-  const ranked = [...gemmas].sort((a, b) => score(b) - score(a));
-
-  // Pick best small (with and without -1k) and best medium
-  const small1k = ranked.filter(m => sizeClass(m) === "small"  &&  m.model_id.includes("-1k"))[0];
-  const small   = ranked.filter(m => sizeClass(m) === "small"  && !m.model_id.includes("-1k"))[0];
-  const medium  = ranked.filter(m => sizeClass(m) === "medium" && !m.model_id.includes("-1k"))[0];
-
-  // For integrated GPU: show fastest (1k context) + regular small
-  // For high-end: show small + medium
-  const toShow = [];
-  if (isIntegratedGpu) {
-    if (small1k) toShow.push({ m: small1k, tier: "fast" });
-    if (small)   toShow.push({ m: small,   tier: "small" });
-  } else {
-    if (small)  toShow.push({ m: small,  tier: "small" });
-    if (medium) toShow.push({ m: medium, tier: "medium" });
-  }
-  if (toShow.length === 0) {
-    const top = ranked.filter(m => !m.model_id.includes("-1k")).slice(0, 2);
-    top.forEach((m, i) => toShow.push({ m, tier: i === 0 ? "small" : "medium" }));
-  }
-
-  // Decide default
-  const defaultTier = isIntegratedGpu ? "fast" : (gpuIsHighEnd ? "medium" : "small");
-
   const container = $("model-cards");
   container.innerHTML = "";
+  selectedId = null;
 
-  toShow.forEach(({ m, tier }) => {
-    const isDefault = tier === defaultTier || toShow.length === 1;
-    const card = makeModelCard(m, tier, isDefault);
+  MODELS.forEach((model, index) => {
+    const isDefault = index === 0;
+    const card = makeModelCard(model, isDefault);
     container.appendChild(card);
-    if (isDefault && !selectedId) selectedId = m.model_id;
+    if (isDefault) selectedId = model.id;
   });
-
-  if (!selectedId && toShow.length) {
-    selectedId = toShow[0].m.model_id;
-    container.firstChild?.classList.add("selected");
-  }
-
   startBtn.disabled = false;
-  updateCacheTags(toShow.map(t => t.m.model_id));
 }
 
-function makeModelCard(modelRecord, tier, isDefault) {
-  const id   = modelRecord.model_id;
-  const vram = modelRecord.vram_required_MB
-    ? (modelRecord.vram_required_MB / 1024).toFixed(1) + " GB VRAM"
-    : "VRAM desconhecida";
-
-  // Human-readable name: strip quantization suffix
-  const friendlyName = id
-    .replace(/-q[0-9]f[0-9]+_[0-9]-MLC.*$/, "")
-    .replace(/-/g, " ");
-
-  const is1k = id.includes("-1k");
-  const sizeLabel = tier === "medium" ? "~9B" : (is1k ? "~2B · 1k ctx" : "~2B");
-  const ctxLabel  = is1k ? "Contexto 1k" : "Contexto 4k";
-  const roleLabel = tier === "fast" ? "Ultrarrápido" : (isDefault ? "Recomendado" : "Avançado");
-  const roleClass = tier === "fast" ? "tag-fast" : (isDefault ? "tag-default" : "tag-upgrade");
+function makeModelCard(model, isDefault) {
+  const { id } = model;
+  const roleLabel = isDefault ? "Recomendado" : "Mais capaz";
+  const roleClass = isDefault ? "tag-default" : "tag-upgrade";
 
   const card      = document.createElement("div");
   card.className  = "model-card" + (isDefault ? " selected" : "");
@@ -860,15 +795,14 @@ function makeModelCard(modelRecord, tier, isDefault) {
 
   card.innerHTML = `
     <div class="model-info">
-      <div class="model-name">${friendlyName}</div>
-      <div class="model-meta">${vram} · ${ctxLabel}</div>
+      <div class="model-name">${model.name}</div>
+      <div class="model-meta">${model.description} · ${model.size} · ${model.context}</div>
     </div>
     <div class="model-tags">
       <span class="tag ${roleClass}" id="tag-role-${id}">
         ${roleLabel}
       </span>
-      <span class="tag tag-size">${sizeLabel}</span>
-      <span class="tag tag-cached" id="tag-cache-${sanitizeId(id)}" style="display:none">Em cache ✓</span>
+      <span class="tag tag-size">LiteRT-LM</span>
     </div>`;
 
   card.addEventListener("click", () => {
@@ -880,67 +814,45 @@ function makeModelCard(modelRecord, tier, isDefault) {
   return card;
 }
 
-async function updateCacheTags(modelIds) {
-  try {
-    const c    = await caches.open("webllm/mlc");
-    const keys = await c.keys();
-    const urls = new Set(keys.map(r => r.url));
-    modelIds.forEach(id => {
-      if ([...urls].some(u => u.includes(id.replace(/-MLC.*$/, "")))) {
-        const el = $(`tag-cache-${sanitizeId(id)}`);
-        if (el) el.style.display = "inline";
-      }
-    });
-  } catch {}
-}
-
 // ── load engine ──────────────────────────────────────────────────────────────
 startBtn.addEventListener("click", async () => {
   if (!selectedId) return;
+  const model = MODELS.find(item => item.id === selectedId);
+  if (!model) return;
+
   startBtn.disabled = true;
   const pw = $("progress-wrap");
   pw.style.display = "block";
-  $("p-text").textContent = "Iniciando carregamento…";
+  $("p-text").textContent = "Baixando e preparando o modelo…";
+  $("p-pct").textContent = "";
+  $("p-bar").classList.add("loading");
+  $("p-sub").textContent = "Na primeira vez, esse processo pode levar alguns minutos.";
 
   try {
-    engine = await webllm.CreateMLCEngine(selectedId, {
-      appConfig: webllm.prebuiltAppConfig,
-      initProgressCallback: onProgress,
+    engine = await Engine.create({
+      model: model.url,
+    });
+    conversation = await engine.createConversation({
+      preface: {
+        messages: [{ role: "system", content: SYSTEM_PROMPT }],
+      },
     });
     switchToChat();
   } catch (err) {
     $("p-text").textContent = "Erro: " + (err.message || err);
     $("p-text").style.color = "var(--err)";
     startBtn.disabled = false;
-    console.error("[WebLLM] load error:", err);
+    $("p-bar").classList.remove("loading");
+    console.error("[LiteRT-LM] load error:", err);
   }
 });
-
-function onProgress(report) {
-  const pct    = Math.round((report.progress || 0) * 100);
-  const text   = report.text || "";
-  $("p-bar").style.width = pct + "%";
-  $("p-pct").textContent = pct + "%";
-  $("p-text").textContent = text.length > 70 ? text.slice(0, 68) + "…" : text;
-
-  const shardMatch = text.match(/(\d+)\s*\/\s*(\d+)/);
-  if (shardMatch) {
-    $("p-sub").textContent = `Fragmento (shard) ${shardMatch[1]} de ${shardMatch[2]} — aguarde, isso só acontece na primeira vez.`;
-  } else if (pct === 100) {
-    $("p-sub").textContent = "Modelo carregado na GPU ✓";
-  } else if (text.toLowerCase().includes("gpu") || text.toLowerCase().includes("webgpu")) {
-    $("p-sub").textContent = "Carregando pesos na VRAM via WebGPU…";
-  }
-}
 
 // ── switch screens ────────────────────────────────────────────────────────────
 function switchToChat() {
   setup.style.display = "none";
   chat.style.display  = "flex";
 
-  const friendlyName = selectedId
-    .replace(/-q[0-9]f[0-9]+_[0-9]-MLC.*$/, "")
-    .replace(/-/g, " ");
+  const friendlyName = MODELS.find(item => item.id === selectedId)?.name || "Gemma 4";
 
   $("h-model").textContent = friendlyName;
   $("h-sub").textContent   =
@@ -951,8 +863,8 @@ function switchToChat() {
   $("user-input").focus();
 
   addMsg("assistant",
-    `Olá! Sou o **${friendlyName}**, rodando diretamente no seu navegador via WebGPU.\n\n` +
-    `Nada é enviado para servidores — toda a inferência acontece locally na sua GPU. Como posso ajudar?`
+    `Olá! Sou o **${friendlyName}**, rodando diretamente no seu navegador com LiteRT-LM e WebGPU.\n\n` +
+    `Nada é enviado para servidores depois do download do modelo. Como posso ajudar?`
   );
 }
 
@@ -995,54 +907,74 @@ async function sendMessage() {
   $("user-input").disabled = true;
 
   addMsg("user", text);
-  history.push({ role: "user", content: text });
 
   const indicator = addTypingIndicator();
 
   try {
-    const t0         = Date.now();
-    let   tokenCount = 0;
+    const t0 = performance.now();
+    let firstOutputAt = null;
+    let chunkCount = 0;
+    let finalUsage = null;
 
-    const stream = await engine.chat.completions.create({
-      messages: [{ role: "system", content: SYSTEM_PROMPT }, ...history],
-      stream:      true,
-      temperature: 0.72,
-      max_tokens:  selectedId?.includes("-1k") ? 512 : (isIntegratedGpu ? 768 : 2048),
-    });
+    const stream = conversation.sendMessageStreaming(text);
 
-    // Replace indicator with live response
+    // Parsing the full Markdown and rewriting the DOM for every streamed chunk
+    // is costly on mobile. Stream plain text, then render Markdown once complete.
     indicator.remove();
     const respMsg  = addMsg("assistant", "");
     const bubble   = respMsg.querySelector(".msg-bubble");
     let   fullText = "";
+    let renderQueued = false;
+
+    const flushStream = () => {
+      renderQueued = false;
+      bubble.textContent = fullText;
+      scrollBottom();
+    };
 
     for await (const chunk of stream) {
-      const delta = chunk.choices[0]?.delta?.content || "";
+      const delta = chunk.content
+        .filter(item => item.type === "text")
+        .map(item => item.text)
+        .join("");
+      if (chunk.usage) finalUsage = chunk.usage;
       if (delta) {
-        fullText   += delta;
-        tokenCount++;
-        bubble.innerHTML = renderMd(fullText);
-        scrollBottom();
+        if (firstOutputAt === null) firstOutputAt = performance.now();
+        fullText += delta;
+        chunkCount++;
+        if (!renderQueued) {
+          renderQueued = true;
+          requestAnimationFrame(flushStream);
+        }
       }
     }
 
+    if (renderQueued) flushStream();
+    bubble.innerHTML = renderMd(fullText);
+    scrollBottom();
+
     // Stats row
-    const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
-    const tps     = (tokenCount / (elapsed || 1)).toFixed(1);
+    const elapsedMs = performance.now() - t0;
+    const elapsed = (elapsedMs / 1000).toFixed(1);
+    const ttft = firstOutputAt === null ? "sem resposta" : `${Math.round(firstOutputAt - t0)} ms`;
+    const outputTokens = finalUsage?.completion_tokens;
+    const decodeMs = firstOutputAt === null ? 0 : performance.now() - firstOutputAt;
+    const tps = outputTokens && decodeMs > 0
+      ? `${(outputTokens / (decodeMs / 1000)).toFixed(1)} tok/s`
+      : `${chunkCount} trechos`;
     const stats   = document.createElement("div");
     stats.className = "msg-stats";
     stats.innerHTML =
-      `<span>${tokenCount} tokens</span>` +
-      `<span>${tps} tok/s</span>` +
+      `<span>1.º trecho: ${ttft}</span>` +
+      `<span>${outputTokens ?? chunkCount} ${outputTokens ? "tokens" : "trechos"}</span>` +
+      `<span>${tps}</span>` +
       `<span>${elapsed}s</span>`;
     respMsg.appendChild(stats);
-
-    history.push({ role: "assistant", content: fullText });
 
   } catch (err) {
     indicator.remove();
     addMsg("assistant", `⚠️ Erro na geração: ${err.message || err}`);
-    console.error("[WebLLM] generation error:", err);
+    console.error("[LiteRT-LM] generation error:", err);
   } finally {
     generating               = false;
     $("send-btn").disabled   = false;
@@ -1059,16 +991,21 @@ $("user-input").addEventListener("keydown", e => {
 
 $("user-input").addEventListener("input", () => autoResize($("user-input")));
 
-$("btn-clear").addEventListener("click", () => {
-  history = [];
+$("btn-clear").addEventListener("click", async () => {
+  if (!engine) return;
+  if (conversation) await conversation.delete();
+  conversation = await engine.createConversation({
+    preface: { messages: [{ role: "system", content: SYSTEM_PROMPT }] },
+  });
   $("messages").innerHTML = "";
   addMsg("assistant", "Conversa limpa. Como posso ajudar?");
 });
 
-$("btn-back").addEventListener("click", () => {
+$("btn-back").addEventListener("click", async () => {
   if (!confirm("Descarregar o modelo atual e trocar? O modelo ficará no cache.")) return;
+  if (engine) await engine.delete();
   engine       = null;
-  history      = [];
+  conversation = null;
   $("messages").innerHTML = "";
   $("user-input").disabled = true;
   $("send-btn").disabled   = true;
@@ -1076,6 +1013,7 @@ $("btn-back").addEventListener("click", () => {
   setup.style.display = "flex";
   $("progress-wrap").style.display = "none";
   $("p-bar").style.width  = "0%";
+  $("p-bar").classList.remove("loading");
   $("p-pct").textContent  = "0%";
   $("p-text").textContent = "";
   $("p-text").style.color = "";
