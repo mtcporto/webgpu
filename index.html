@@ -549,11 +549,11 @@
     </div>
 
     <div class="banner-warn" id="webgpu-warn">
-      ⚠️ <strong>WebGPU não disponível.</strong> Use Chrome 113+, Edge 113+ ou Firefox Nightly com WebGPU habilitado.
+      ⚠️ <strong>WebGPU não disponível.</strong> O site pode tentar o modo local por CPU, mas ele é consideravelmente mais lento.
     </div>
 
     <div class="banner-warn" id="noadapter-warn">
-      ⚠️ <strong>Nenhuma GPU encontrada.</strong> WebGPU está disponível, mas o navegador não encontrou um adaptador gráfico compatível. Tente habilitar a aceleração por hardware nas configurações do navegador ou use um computador com GPU.
+      ⚠️ <strong>Sem adaptador WebGPU.</strong> O navegador não liberou a GPU para esta página. Você ainda pode tentar o modo local por CPU; no S24, prefira Chrome atualizado para usar a GPU.
     </div>
 
     <div class="banner-info" id="igpu-warn">
@@ -612,7 +612,7 @@
     <button class="btn btn-primary" id="start-btn" disabled>
       <span id="start-label">Carregar Modelo</span>
     </button>
-    <p class="setup-footer">O navegador pode reutilizar o download do modelo · ~1,9–2,8 GB</p>
+    <p class="setup-footer" id="setup-footer">O navegador pode reutilizar o download do modelo · ~1,9–2,8 GB</p>
 
   </div>
 </div>
@@ -657,7 +657,7 @@
 // The JS API is still an early preview, so keep the supported web packages
 // explicit instead of relying on a runtime-specific model catalogue.
 // ─────────────────────────────────────────────────────────────────────────────
-import { Engine } from "https://cdn.jsdelivr.net/npm/@litert-lm/core@0.12.0/+esm";
+import { Backend, Engine } from "https://cdn.jsdelivr.net/npm/@litert-lm/core@0.12.0/+esm";
 
 // ── state ────────────────────────────────────────────────────────────────────
 let engine          = null;
@@ -666,6 +666,7 @@ let selectedId      = null;
 let generating      = false;
 let gpuIsHighEnd    = false;
 let isIntegratedGpu = false;
+let executionMode   = "gpu";
 
 const MODELS = [
   {
@@ -709,7 +710,7 @@ async function detectSystem() {
   if (!navigator.gpu) {
     setDot("d-webgpu", "err"); setVal("v-webgpu", "Não suportado");
     $("webgpu-warn").style.display = "block";
-    startBtn.disabled = true;
+    enableCpuFallback();
     return;
   }
 
@@ -727,7 +728,7 @@ async function detectSystem() {
   if (!adapter) {
     setDot("d-webgpu", "warn"); setVal("v-webgpu", "Sem adaptador");
     $('noadapter-warn').style.display = 'block';
-    startBtn.disabled = true;
+    enableCpuFallback();
     return;
   }
 
@@ -769,19 +770,34 @@ async function detectSystem() {
   setVal("v-cache", "Gerenciado pelo navegador");
 }
 
+function enableCpuFallback() {
+  executionMode = "cpu";
+  setDot("d-gpu", "warn");
+  setVal("v-gpu", "CPU / WASM");
+
+  const ram = navigator.deviceMemory || null;
+  setDot("d-ram", ram && ram >= 8 ? "ok" : "warn");
+  setVal("v-ram", ram ? `≥ ${ram} GB` : "Desconhecida");
+  setDot("d-cache", "warn");
+  setVal("v-cache", "Gerenciado pelo navegador");
+  $("start-label").textContent = "Tentar modo CPU";
+  $("setup-footer").textContent = "Modo CPU: use apenas Gemma 4 E2B · ~1,9 GB · mais lento que WebGPU";
+}
+
 // ── model list ───────────────────────────────────────────────────────────────
 function buildModelList() {
   const container = $("model-cards");
   container.innerHTML = "";
   selectedId = null;
 
-  MODELS.forEach((model, index) => {
+  const availableModels = executionMode === "cpu" ? MODELS.slice(0, 1) : MODELS;
+  availableModels.forEach((model, index) => {
     const isDefault = index === 0;
     const card = makeModelCard(model, isDefault);
     container.appendChild(card);
     if (isDefault) selectedId = model.id;
   });
-  startBtn.disabled = false;
+  startBtn.disabled = !selectedId;
 }
 
 function makeModelCard(model, isDefault) {
@@ -831,6 +847,7 @@ startBtn.addEventListener("click", async () => {
   try {
     engine = await Engine.create({
       model: model.url,
+      backend: executionMode === "cpu" ? Backend.CPU_ARTISAN : Backend.GPU_ARTISAN,
     });
     conversation = await engine.createConversation({
       preface: {
@@ -856,7 +873,7 @@ function switchToChat() {
 
   $("h-model").textContent = friendlyName;
   $("h-sub").textContent   =
-    `WebGPU · ${(window._gpuLabel || "GPU Local").slice(0, 32)} · 100% privado`;
+    `${executionMode === "cpu" ? "CPU / WASM" : "WebGPU"} · ${(window._gpuLabel || "Processamento local").slice(0, 32)} · 100% privado`;
 
   $("user-input").disabled = false;
   $("send-btn").disabled   = false;
