@@ -39,7 +39,15 @@ jobs:
 
       - name: Build debug APK
         working-directory: android
-        run: ./gradlew assembleDebug --no-daemon
+        run: ./gradlew assembleDebug --no-daemon --stacktrace --info 2>&1 | tee ../gradle-build.log
+
+      - name: Upload Gradle build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gradle-build-log
+          path: gradle-build.log
+          if-no-files-found: warn
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
