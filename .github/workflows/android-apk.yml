@@ -41,6 +41,13 @@ jobs:
         working-directory: android
         run: ./gradlew assembleDebug --no-daemon --stacktrace --info 2>&1 | tee ../gradle-build.log
 
+      - name: Collect APK
+        run: |
+          find android -type f -name '*.apk' -print
+          apk_path="$(find android -type f -name '*.apk' | head -n 1)"
+          test -n "$apk_path"
+          cp "$apk_path" gemma-webgpu-debug.apk
+
       - name: Upload Gradle build log
         if: always()
         uses: actions/upload-artifact@v4
@@ -53,5 +60,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: gemma-webgpu-debug-apk
-          path: android/**/outputs/apk/**/*.apk
+          path: gemma-webgpu-debug.apk
           if-no-files-found: error
