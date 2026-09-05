@@ -7,12 +7,12 @@ import com.getcapacitor.PluginCall
 import com.getcapacitor.PluginMethod
 import com.getcapacitor.annotation.CapacitorPlugin
 import com.google.ai.edge.litertlm.Backend
+import com.google.ai.edge.litertlm.Content
 import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.Conversation
 import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
-import com.google.ai.edge.litertlm.ExperimentalApi
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -68,7 +68,6 @@ class NativeGemmaPlugin : Plugin() {
     }
 
     @PluginMethod
-    @OptIn(ExperimentalApi::class)
     fun sendMessage(call: PluginCall) {
         val text = call.getString("text")
         if (text.isNullOrBlank()) {
@@ -80,7 +79,9 @@ class NativeGemmaPlugin : Plugin() {
             try {
                 val activeConversation = conversation ?: throw IllegalStateException("O modelo ainda não foi inicializado")
                 val response = activeConversation.sendMessage(text)
-                val rendered = activeConversation.renderMessageIntoString(response)
+                val rendered = response.contents.contents
+                    .filterIsInstance<Content.Text>()
+                    .joinToString("") { it.text }
                 call.resolve(JSObject().put("text", rendered))
             } catch (error: Throwable) {
                 reject(call, error)
