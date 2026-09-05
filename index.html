@@ -687,6 +687,10 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import { Engine } from "@litert-lm/core";
 import Prism from "prismjs";
+import { Capacitor, registerPlugin } from "@capacitor/core";
+
+const NativeGemma = registerPlugin("NativeGemma");
+const isNativeApp = Capacitor.isNativePlatform();
 
 // ── state ────────────────────────────────────────────────────────────────────
 let engine          = null;
@@ -707,6 +711,7 @@ const MODELS = [
     size: "~1,9 GB",
     context: "Chat de texto",
     url: "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it-web.litertlm",
+    nativeUrl: "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm",
   },
   {
     id: "gemma-4-e4b",
@@ -715,6 +720,7 @@ const MODELS = [
     size: "~2,8 GB",
     context: "Chat de texto",
     url: "https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm/resolve/main/gemma-4-E4B-it-web.litertlm",
+    nativeUrl: "https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm/resolve/main/gemma-4-E4B-it.litertlm",
   },
 ];
 
@@ -737,6 +743,15 @@ async function init() {
 
 // ── system detection ─────────────────────────────────────────────────────────
 async function detectSystem() {
+  if (isNativeApp) {
+    setDot("d-webgpu", "ok"); setVal("v-webgpu", "LiteRT-LM nativo");
+    setDot("d-gpu", "ok"); setVal("v-gpu", "GPU Android disponível");
+    setDot("d-ram", "ok"); setVal("v-ram", "Android");
+    setDot("d-cache", "ok"); setVal("v-cache", "Modelo nativo");
+    webGpuReady = true;
+    return;
+  }
+
   // WebGPU
   if (!navigator.gpu) {
     setDot("d-webgpu", "err"); setVal("v-webgpu", "Não suportado");
@@ -987,6 +1002,17 @@ startBtn.addEventListener("click", async () => {
   setLoadProgress("Preparando o modelo…", "A primeira instalação pode levar alguns minutos.");
 
   try {
+    if (isNativeApp) {
+      setLoadProgress("Preparando o LiteRT-LM nativo…", "O primeiro download pode levar alguns minutos.");
+      await NativeGemma.initialize({
+        modelId: model.id,
+        modelUrl: model.nativeUrl,
+      });
+      setLoadProgress("GPU Android pronta", "A conversa será aberta agora.", 100);
+      switchToChat();
+      return;
+    }
+
     const modelSource = await getModelSource(model);
     engine = await Engine.create({
       model: modelSource,
@@ -1016,7 +1042,9 @@ function switchToChat() {
 
   $("h-model").textContent = friendlyName;
   $("h-sub").textContent   =
-    `WebGPU · ${(window._gpuLabel || "GPU Local").slice(0, 32)} · 100% privado`;
+    isNativeApp
+      ? "LiteRT-LM nativo · GPU Android · 100% privado"
+      : `WebGPU · ${(window._gpuLabel || "GPU Local").slice(0, 32)} · 100% privado`;
 
   $("user-input").disabled = false;
   $("send-btn").disabled   = false;
@@ -1071,6 +1099,18 @@ async function sendMessage() {
   const indicator = addTypingIndicator();
 
   try {
+    if (isNativeApp) {
+      const t0 = performance.now();
+      const nativeResponse = await NativeGemma.sendMessage({ text });
+      indicator.remove();
+      const respMsg = addMsg("assistant", nativeResponse.text || "");
+      const stats = document.createElement("div");
+      stats.className = "msg-stats";
+      stats.innerHTML = `<span>LiteRT-LM nativo</span><span>${((performance.now() - t0) / 1000).toFixed(1)}s</span>`;
+      respMsg.appendChild(stats);
+      return;
+    }
+
     const t0 = performance.now();
     let firstOutputAt = null;
     let chunkCount = 0;
@@ -1149,6 +1189,16 @@ $("user-input").addEventListener("keydown", e => {
 $("user-input").addEventListener("input", () => autoResize($("user-input")));
 
 $("btn-clear").addEventListener("click", async () => {
+  if (isNativeApp) {
+    if (!selectedId) return;
+    await NativeGemma.shutdown();
+    const model = MODELS.find(item => item.id === selectedId);
+    await NativeGemma.initialize({ modelId: model.id, modelUrl: model.nativeUrl });
+    $("messages").innerHTML = "";
+    addMsg("assistant", "Conversa limpa. Como posso ajudar?");
+    return;
+  }
+
   if (!engine) return;
   if (conversation) await conversation.delete();
   conversation = await engine.createConversation({
@@ -1160,6 +1210,7 @@ $("btn-clear").addEventListener("click", async () => {
 
 $("btn-back").addEventListener("click", async () => {
   if (!confirm("Descarregar o modelo atual e trocar? O modelo ficará no cache.")) return;
+  if (isNativeApp) await NativeGemma.shutdown();
   if (engine) await engine.delete();
   engine       = null;
   conversation = null;
