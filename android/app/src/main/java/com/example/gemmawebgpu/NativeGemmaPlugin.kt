@@ -12,6 +12,7 @@ import com.google.ai.edge.litertlm.Conversation
 import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
+import com.google.ai.edge.litertlm.ExperimentalApi
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -61,12 +62,13 @@ class NativeGemmaPlugin : Plugin() {
                 call.resolve(JSObject().put("backend", "GPU").put("modelPath", modelFile.absolutePath))
             } catch (error: Throwable) {
                 closeEngine()
-                call.reject(error.message ?: error.javaClass.simpleName, error)
+                reject(call, error)
             }
         }
     }
 
     @PluginMethod
+    @OptIn(ExperimentalApi::class)
     fun sendMessage(call: PluginCall) {
         val text = call.getString("text")
         if (text.isNullOrBlank()) {
@@ -81,7 +83,7 @@ class NativeGemmaPlugin : Plugin() {
                 val rendered = activeConversation.renderMessageIntoString(response)
                 call.resolve(JSObject().put("text", rendered))
             } catch (error: Throwable) {
-                call.reject(error.message ?: error.javaClass.simpleName, error)
+                reject(call, error)
             }
         }
     }
@@ -119,6 +121,11 @@ class NativeGemmaPlugin : Plugin() {
     }
 
     private fun requireContext(): Context = activity.applicationContext
+
+    private fun reject(call: PluginCall, error: Throwable) {
+        val exception = error as? Exception ?: RuntimeException(error.message, error)
+        call.reject(error.message ?: error.javaClass.simpleName, exception)
+    }
 
     private fun closeEngine() {
         conversation?.close()
