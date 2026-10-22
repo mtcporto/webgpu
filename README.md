@@ -28,3 +28,8 @@ O app ainda usa WebGPU dentro do WebView. O acesso à NPU exigirá uma etapa pos
 ## Build automático no GitHub
 
 O workflow `Build Android APK` gera um APK debug automaticamente a cada push na branch `main`. Também é possível executá-lo manualmente em **Actions → Build Android APK → Run workflow**. Ao terminar, baixe o APK na seção **Artifacts** da execução.
+
+
+## Desenvolvimento
+
+Baseline: Node.js 24.x. Consulte o `package.json` para instalação, validação e build.
